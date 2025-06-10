@@ -12,9 +12,17 @@ interface Chunk {
     clues: Record<string, string[]>;
 }
 
+interface CachedResult {
+    results: AnswerMatch[];
+    timestamp: number;
+}
+
 export class ChunkedCrosswordLoader {
     private manifest: ChunkManifest | null = null;
     private chunkCache = new Map<string, Chunk>();
+    private resultCache = new Map<string, CachedResult>();
+    private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+    private readonly MAX_RESULT_CACHE_SIZE = 100;
 
     constructor(private dataBucket: R2Bucket) { }
 
@@ -67,6 +75,15 @@ export class ChunkedCrosswordLoader {
         }
     }
 
+    private async loadChunksParallel(chunkFiles: string[]): Promise<Chunk[]> {
+        const chunkPromises = chunkFiles.map(fileName => this.loadChunk(fileName));
+        const chunks = await Promise.allSettled(chunkPromises);
+
+        return chunks
+            .filter((result): result is PromiseFulfilledResult<Chunk> => result.status === 'fulfilled')
+            .map(result => result.value);
+    }
+
     private getRelevantChunks(pattern: string): string[] {
         if (!this.manifest) return [];
 
@@ -92,34 +109,196 @@ export class ChunkedCrosswordLoader {
         return chunks;
     }
 
-    async findMatchingAnswers(pattern: string): Promise<AnswerMatch[]> {
-        await this.loadManifest();
+    private analyzePattern(pattern: string): {
+        wildcardCount: number;
+        wildcardPositions: number[];
+        startsWithWildcard: boolean;
+        isHighCostPattern: boolean;
+        searchStrategy: 'direct' | 'parallel-optimized' | 'sequential-limited';
+    } {
+        const wildcardPositions = [];
+        let wildcardCount = 0;
 
-        const normalizedPattern = pattern.toUpperCase();
-        const regex = new RegExp('^' + normalizedPattern.replace(/\?/g, '[A-Z]') + '$');
-
-        const relevantChunks = this.getRelevantChunks(normalizedPattern);
-        console.log(`Searching ${relevantChunks.length} relevant chunks for pattern: ${pattern}`);
-
-        const results: AnswerMatch[] = [];
-
-        for (const chunkFile of relevantChunks) {
-            try {
-                const chunk = await this.loadChunk(chunkFile);
-
-                for (const answer of chunk.answers) {
-                    if (regex.test(answer.answer)) {
-                        results.push(answer);
-                    }
-                }
-            } catch (error) {
-                console.error(`Error processing chunk ${chunkFile}:`, error);
-                // Continue with other chunks
+        for (let i = 0; i < pattern.length; i++) {
+            if (pattern[i] === '?') {
+                wildcardPositions.push(i);
+                wildcardCount++;
             }
         }
 
-        // Sort by count descending
-        return results.sort((a, b) => b.count - a.count);
+        const startsWithWildcard = pattern[0] === '?';
+        const wildcardRatio = wildcardCount / pattern.length;
+
+        // High cost patterns are those with many wildcards, especially starting with wildcards
+        const isHighCostPattern = startsWithWildcard && (wildcardCount > 2 || wildcardRatio > 0.5);
+
+        let searchStrategy: 'direct' | 'parallel-optimized' | 'sequential-limited';
+        if (!startsWithWildcard) {
+            searchStrategy = 'direct';
+        } else if (wildcardCount <= 3 && pattern.length <= 8) {
+            searchStrategy = 'parallel-optimized';
+        } else {
+            searchStrategy = 'sequential-limited';
+        }
+
+        return {
+            wildcardCount,
+            wildcardPositions,
+            startsWithWildcard,
+            isHighCostPattern,
+            searchStrategy
+        };
+    }
+
+    private getCacheKey(pattern: string): string {
+        return `pattern:${pattern.toUpperCase()}`;
+    }
+
+    private getCachedResult(pattern: string): AnswerMatch[] | null {
+        const cacheKey = this.getCacheKey(pattern);
+        const cached = this.resultCache.get(cacheKey);
+
+        if (!cached) return null;
+
+        // Check if cache is still valid
+        if (Date.now() - cached.timestamp > this.CACHE_TTL) {
+            this.resultCache.delete(cacheKey);
+            return null;
+        }
+
+        return cached.results;
+    }
+
+    private setCachedResult(pattern: string, results: AnswerMatch[]): void {
+        const cacheKey = this.getCacheKey(pattern);
+
+        // Keep cache size reasonable
+        if (this.resultCache.size >= this.MAX_RESULT_CACHE_SIZE) {
+            // Remove oldest entries (simple FIFO approach)
+            const oldestKey = this.resultCache.keys().next().value;
+            if (oldestKey) {
+                this.resultCache.delete(oldestKey);
+            }
+        }
+
+        this.resultCache.set(cacheKey, {
+            results: [...results], // Deep copy to avoid mutations
+            timestamp: Date.now()
+        });
+    }
+
+    async findMatchingAnswers(pattern: string, maxResults: number = 100): Promise<AnswerMatch[]> {
+        await this.loadManifest();
+
+        const normalizedPattern = pattern.toUpperCase();
+
+        // Check cache first
+        const cachedResult = this.getCachedResult(normalizedPattern);
+        if (cachedResult) {
+            console.log(`Cache hit for pattern: ${pattern}`);
+            return cachedResult.slice(0, maxResults);
+        }
+
+        // Analyze pattern for optimization strategy
+        const patternAnalysis = this.analyzePattern(normalizedPattern);
+        const regex = new RegExp('^' + normalizedPattern.replace(/\?/g, '[A-Z]') + '$');
+        const relevantChunks = this.getRelevantChunks(normalizedPattern);
+
+        console.log(`Searching ${relevantChunks.length} relevant chunks for pattern: ${pattern} (strategy: ${patternAnalysis.searchStrategy})`);
+
+        const results: AnswerMatch[] = [];
+
+        switch (patternAnalysis.searchStrategy) {
+            case 'direct':
+                // Fast path for patterns with known first letter
+                for (const chunkFile of relevantChunks) {
+                    try {
+                        const chunk = await this.loadChunk(chunkFile);
+                        for (const answer of chunk.answers) {
+                            if (regex.test(answer.answer)) {
+                                results.push(answer);
+                            }
+                        }
+                    } catch (error) {
+                        console.error(`Error processing chunk ${chunkFile}:`, error);
+                    }
+                }
+                break;
+
+            case 'parallel-optimized':
+                // Optimized parallel search for manageable wildcard patterns
+                console.log(`Using parallel optimization for pattern: ${pattern}`);
+                const chunks = await this.loadChunksParallel(relevantChunks);
+
+                for (const chunk of chunks) {
+                    for (const answer of chunk.answers) {
+                        if (regex.test(answer.answer)) {
+                            results.push(answer);
+
+                            // Early stopping when we have enough good results
+                            if (results.length >= maxResults * 2) {
+                                break;
+                            }
+                        }
+                    }
+
+                    // Stop processing more chunks if we have enough results
+                    if (results.length >= maxResults * 2) {
+                        console.log(`Early stopping: Found ${results.length} results`);
+                        break;
+                    }
+                }
+                break;
+
+            case 'sequential-limited':
+                // Conservative approach for very expensive patterns
+                console.log(`Using limited search for expensive pattern: ${pattern}`);
+                let processedChunks = 0;
+                const maxChunksToProcess = Math.min(5, relevantChunks.length); // Limit chunk processing
+
+                for (const chunkFile of relevantChunks) {
+                    if (processedChunks >= maxChunksToProcess) {
+                        console.log(`Limiting search: processed ${processedChunks} chunks`);
+                        break;
+                    }
+
+                    try {
+                        const chunk = await this.loadChunk(chunkFile);
+                        let answersFromChunk = 0;
+
+                        for (const answer of chunk.answers) {
+                            if (regex.test(answer.answer)) {
+                                results.push(answer);
+                                answersFromChunk++;
+
+                                // Limit results per chunk for expensive patterns
+                                if (answersFromChunk >= 20) {
+                                    break;
+                                }
+                            }
+                        }
+
+                        processedChunks++;
+
+                        // Early exit if we have enough results
+                        if (results.length >= maxResults) {
+                            break;
+                        }
+                    } catch (error) {
+                        console.error(`Error processing chunk ${chunkFile}:`, error);
+                        processedChunks++;
+                    }
+                }
+                break;
+        }
+
+        // Sort by count descending and limit results
+        const sortedResults = results.sort((a, b) => b.count - a.count).slice(0, maxResults);
+
+        // Cache the result
+        this.setCachedResult(normalizedPattern, sortedResults);
+
+        return sortedResults;
     }
 
     async getClues(answer: string, maxClues: number = 10): Promise<string[]> {
