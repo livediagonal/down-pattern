@@ -6,6 +6,8 @@ A high-performance crossword clue and answer lookup service built with Cloudflar
 
 Down Pattern (AKA "across-word") provides fast crossword answer pattern matching and clue lookup. It uses a chunked indexing strategy to efficiently serve crossword data from Cloudflare R2 storage.
 
+API live at https://downpattern.livediagonal.com if you would like to cheat on crosswords or whatever
+
 ## Features
 
 - **Pattern Matching**: Find crossword answers matching a pattern (e.g., `A?PLE` finds `APPLE`)
