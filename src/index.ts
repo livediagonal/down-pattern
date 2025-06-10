@@ -30,8 +30,7 @@ app.get('/', (c) => {
         optimizations: [
             'Result caching (5min TTL)',
             'Parallel chunk loading for wildcard patterns',
-            'Smart search strategies based on pattern analysis',
-            'Early stopping for expensive queries'
+            'Smart search strategies based on pattern analysis'
         ]
     });
 });

@@ -114,7 +114,7 @@ export class ChunkedCrosswordLoader {
         wildcardPositions: number[];
         startsWithWildcard: boolean;
         isHighCostPattern: boolean;
-        searchStrategy: 'direct' | 'parallel-optimized' | 'sequential-limited';
+        searchStrategy: 'direct' | 'parallel-optimized';
     } {
         const wildcardPositions = [];
         let wildcardCount = 0;
@@ -130,16 +130,9 @@ export class ChunkedCrosswordLoader {
         const wildcardRatio = wildcardCount / pattern.length;
 
         // High cost patterns are those with many wildcards, especially starting with wildcards
-        const isHighCostPattern = startsWithWildcard && (wildcardCount > 2 || wildcardRatio > 0.5);
+        const isHighCostPattern = startsWithWildcard && (wildcardCount > 3 || wildcardRatio > 0.6);
 
-        let searchStrategy: 'direct' | 'parallel-optimized' | 'sequential-limited';
-        if (!startsWithWildcard) {
-            searchStrategy = 'direct';
-        } else if (wildcardCount <= 3 && pattern.length <= 8) {
-            searchStrategy = 'parallel-optimized';
-        } else {
-            searchStrategy = 'sequential-limited';
-        }
+        const searchStrategy = startsWithWildcard ? 'parallel-optimized' : 'direct';
 
         return {
             wildcardCount,
@@ -226,7 +219,7 @@ export class ChunkedCrosswordLoader {
                 break;
 
             case 'parallel-optimized':
-                // Optimized parallel search for manageable wildcard patterns
+                // Optimized parallel search for wildcard patterns
                 console.log(`Using parallel optimization for pattern: ${pattern}`);
                 const chunks = await this.loadChunksParallel(relevantChunks);
 
@@ -246,47 +239,6 @@ export class ChunkedCrosswordLoader {
                     if (results.length >= maxResults * 2) {
                         console.log(`Early stopping: Found ${results.length} results`);
                         break;
-                    }
-                }
-                break;
-
-            case 'sequential-limited':
-                // Conservative approach for very expensive patterns
-                console.log(`Using limited search for expensive pattern: ${pattern}`);
-                let processedChunks = 0;
-                const maxChunksToProcess = Math.min(5, relevantChunks.length); // Limit chunk processing
-
-                for (const chunkFile of relevantChunks) {
-                    if (processedChunks >= maxChunksToProcess) {
-                        console.log(`Limiting search: processed ${processedChunks} chunks`);
-                        break;
-                    }
-
-                    try {
-                        const chunk = await this.loadChunk(chunkFile);
-                        let answersFromChunk = 0;
-
-                        for (const answer of chunk.answers) {
-                            if (regex.test(answer.answer)) {
-                                results.push(answer);
-                                answersFromChunk++;
-
-                                // Limit results per chunk for expensive patterns
-                                if (answersFromChunk >= 20) {
-                                    break;
-                                }
-                            }
-                        }
-
-                        processedChunks++;
-
-                        // Early exit if we have enough results
-                        if (results.length >= maxResults) {
-                            break;
-                        }
-                    } catch (error) {
-                        console.error(`Error processing chunk ${chunkFile}:`, error);
-                        processedChunks++;
                     }
                 }
                 break;
