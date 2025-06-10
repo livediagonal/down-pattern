@@ -1,0 +1,25 @@
+{
+    "name": "down-pattern",
+    "version": "1.0.0",
+    "description": "Crossword clue and answer lookup service",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "build-chunks": "node scripts/build-chunked-index.js",
+        "upload-chunks": "npm run build-chunks && node scripts/upload-chunks.js",
+        "preview": "vite preview",
+        "deploy": "npm run build && wrangler deploy",
+        "wrangler": "wrangler"
+    },
+    "dependencies": {
+        "hono": "^4.0.0"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "^4.20240117.0",
+        "@types/node": "^20.10.0",
+        "typescript": "^5.3.0",
+        "vite": "^5.0.0",
+        "wrangler": "^3.22.0"
+    }
+}

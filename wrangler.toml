@@ -1,0 +1,11 @@
+name = "down-pattern"
+main = "dist/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+NODE_ENV = "production"
+
+[[r2_buckets]]
+binding = "DATA_BUCKET"
+bucket_name = "miniword"
+preview_bucket_name = "miniword"
