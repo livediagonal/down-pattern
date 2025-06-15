@@ -271,8 +271,15 @@ export class ChunkedCrosswordLoader {
             const chunk = await this.loadChunk(lengthChunks[cleanFirstLetter]);
             const clues = chunk.clues[normalizedAnswer] || [];
 
-            // Randomize and return up to maxClues
-            const shuffled = [...clues].sort(() => Math.random() - 0.5);
+            // Deduplicate clues first
+            const uniqueClues = [...new Set(clues)];
+
+            // Properly shuffle using Fisher-Yates algorithm
+            const shuffled = [...uniqueClues];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
             return shuffled.slice(0, maxClues);
         } catch (error) {
             console.error(`Error getting clues for ${answer}:`, error);
